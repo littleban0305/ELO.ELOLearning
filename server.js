@@ -38,31 +38,41 @@ const DEFAULT_THEME = 'dark';
 
 const DATA_DIR = process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || path.join(ROOT, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'elolearning.json');
+// 資料只在啟動時讀一次，之後所有請求共用同一份記憶體中的資料。
+// 以前每個請求各讀一份、改完整份寫回，慢的請求（例如 AI 出題）會把別人剛存的修改蓋掉。
+let DB = null;
 let writeQueue = Promise.resolve();
+let pendingWrite = false;
 
-async function ensureDb() {
+async function initDb() {
   await fsp.mkdir(DATA_DIR, { recursive: true });
+  let parsed = {};
   try {
-    await fsp.access(DATA_FILE);
-  } catch {
-    await fsp.writeFile(DATA_FILE, JSON.stringify({ users: [], sessions: [], notes: [], questions: [] }, null, 2));
+    parsed = JSON.parse(await fsp.readFile(DATA_FILE, 'utf8'));
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      // 檔案壞掉時不要直接覆蓋，先備份起來，避免資料整個消失。
+      const backup = `${DATA_FILE}.broken-${Date.now()}`;
+      await fsp.copyFile(DATA_FILE, backup).catch(() => {});
+      console.error(`[ELOLearning] 資料檔無法讀取，已備份到 ${backup}：${error.message}`);
+    }
   }
-}
-async function loadDb() {
-  await ensureDb();
-  const raw = await fsp.readFile(DATA_FILE, 'utf8');
-  const db = JSON.parse(raw);
-  return {
-    users: Array.isArray(db.users) ? db.users : [],
-    sessions: Array.isArray(db.sessions) ? db.sessions : [],
-    notes: Array.isArray(db.notes) ? db.notes : [],
-    questions: Array.isArray(db.questions) ? db.questions : [],
+  DB = {
+    users: Array.isArray(parsed.users) ? parsed.users : [],
+    sessions: (Array.isArray(parsed.sessions) ? parsed.sessions : []).filter((s) => s.expiresAt > Date.now()),
+    notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+    questions: Array.isArray(parsed.questions) ? parsed.questions : [],
   };
+  await saveDb();
 }
-function saveDb(db) {
-  writeQueue = writeQueue.then(async () => {
+function saveDb() {
+  // 短時間內多次儲存只寫一次，而且永遠寫入「當下最新」的資料。
+  if (pendingWrite) return writeQueue;
+  pendingWrite = true;
+  writeQueue = writeQueue.catch(() => {}).then(async () => {
+    pendingWrite = false;
     const tmp = `${DATA_FILE}.tmp`;
-    await fsp.writeFile(tmp, JSON.stringify(db, null, 2));
+    await fsp.writeFile(tmp, JSON.stringify(DB));
     await fsp.rename(tmp, DATA_FILE);
   });
   return writeQueue;
@@ -111,6 +121,7 @@ function hashPassword(password, salt) {
     });
   });
 }
+const DUMMY_SALT = crypto.randomBytes(16).toString('hex');
 async function makePasswordHash(password) {
   const salt = crypto.randomBytes(16).toString('hex');
   const hash = await hashPassword(password, salt);
@@ -144,7 +155,7 @@ async function getAuth(req, db) {
   if (!session) return null;
   if (session.expiresAt <= Date.now()) {
     db.sessions = db.sessions.filter((s) => s.id !== session.id);
-    await saveDb(db);
+    await saveDb();
     return null;
   }
   const user = db.users.find((u) => u.id === session.userId);
@@ -158,6 +169,44 @@ function requireAuth(auth, res) {
   }
   return true;
 }
+
+// ── 次數限制：擋暴力猜密碼、灌假帳號、濫用網站預設金鑰 ──
+const RATE_LIMITS = {
+  loginIp:      { limit: 30, windowMs: 15 * 60_000 },  // 同一個 IP 15 分鐘最多嘗試 30 次登入
+  loginEmail:   { limit: 8,  windowMs: 15 * 60_000 },  // 同一個帳號 15 分鐘最多猜錯 8 次
+  registerIp:   { limit: 5,  windowMs: 60 * 60_000 },  // 同一個 IP 1 小時最多註冊 5 個帳號
+  passwordUser: { limit: 5,  windowMs: 15 * 60_000 },  // 改密碼時目前密碼最多打錯 5 次
+  testKeyUser:  { limit: 20, windowMs: 10 * 60_000 },  // 測試金鑰
+  sharedAiUser: { limit: 30, windowMs: 60 * 60_000 },  // 用網站預設金鑰時，每人每小時 30 次 AI
+};
+const rateBuckets = new Map();
+function clientIp(req) {
+  const h = req.headers;
+  const forwarded = String(h['cf-connecting-ip'] || h['true-client-ip'] || h['x-forwarded-for'] || '').split(',')[0].trim();
+  return forwarded || req.socket?.remoteAddress || 'unknown';
+}
+function rateKey(kind, id) { return `${kind}:${String(id).toLowerCase()}`; }
+function rateCheck(kind, id) {
+  const bucket = rateBuckets.get(rateKey(kind, id));
+  if (!bucket || bucket.resetAt <= Date.now()) return;
+  if (bucket.count >= RATE_LIMITS[kind].limit) {
+    const seconds = Math.ceil((bucket.resetAt - Date.now()) / 1000);
+    const minutes = Math.max(1, Math.ceil(seconds / 60));
+    throw Object.assign(new Error(`嘗試次數太多了，請 ${minutes} 分鐘後再試。`), { status: 429, code: 'RATE_LIMITED', retryAfter: seconds });
+  }
+}
+function rateHit(kind, id) {
+  const key = rateKey(kind, id);
+  const now = Date.now();
+  let bucket = rateBuckets.get(key);
+  if (!bucket || bucket.resetAt <= now) { bucket = { count: 0, resetAt: now + RATE_LIMITS[kind].windowMs }; rateBuckets.set(key, bucket); }
+  bucket.count += 1;
+}
+function rateReset(kind, id) { rateBuckets.delete(rateKey(kind, id)); }
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, bucket] of rateBuckets) if (bucket.resetAt <= now) rateBuckets.delete(key);
+}, 5 * 60_000).unref();
 async function readJson(req) {
   let total = 0;
   let raw = '';
@@ -261,10 +310,17 @@ function readUserApiKey(req) {
 
 // 每個請求決定要用哪把金鑰：使用者自己的優先，其次才是網站預設。
 // 使用者的金鑰只在這次請求的記憶體中使用，不會寫進資料庫或 log。
-function getAiClient(req) {
+function getAiClient(req, auth) {
   const userKey = readUserApiKey(req);
   if (userKey) return { client: new GoogleGenAI({ apiKey: userKey }), source: 'user' };
-  if (sharedGenai) return { client: sharedGenai, source: 'shared' };
+  if (sharedGenai) {
+    // 網站預設金鑰的額度是擁有者的，每人每小時限制次數，避免被少數人用光。
+    const id = auth?.user?.id || clientIp(req);
+    try { rateCheck('sharedAiUser', id); }
+    catch (error) { error.message = '用網站預設金鑰的次數已達本小時上限，請稍後再試，或到「設定」填入你自己的 Gemini API Key。'; error.code = 'QUOTA_EXCEEDED'; throw error; }
+    rateHit('sharedAiUser', id);
+    return { client: sharedGenai, source: 'shared' };
+  }
   throw Object.assign(new Error('還沒有設定 Gemini API Key。請到「設定」填入你自己的金鑰後再試一次。'), { status: 400, code: 'NO_API_KEY' });
 }
 
@@ -335,8 +391,8 @@ function normalizeAiError(error, source = 'user') {
   return Object.assign(new Error(message), { status: 502 });
 }
 
-async function askGemini(req, prompt, responseSchema = null) {
-  const { client, source } = getAiClient(req);
+async function askGemini(req, auth, prompt, responseSchema = null) {
+  const { client, source } = getAiClient(req, auth);
   try {
     const response = await client.models.generateContent({
       model: MODEL,
@@ -491,39 +547,54 @@ async function handleApi(req, res, db, auth) {
   }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/register') {
+    const ip = clientIp(req);
+    rateCheck('registerIp', ip);
     const body = await readJson(req);
     const name = clean(body.name, 60);
     const email = clean(body.email, 200).toLowerCase();
     const password = String(body.password || '');
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return sendJson(res,400,{error:'請輸入有效的 Email。'});
     if (password.length < 8) return sendJson(res,400,{error:'密碼至少需要 8 個字元。'});
+    if (password.length > 200) return sendJson(res,400,{error:'密碼太長了（最多 200 個字元）。'});
     if (db.users.some((u)=>u.email===email)) return sendJson(res,409,{error:'這個 Email 已經註冊過了。'});
+    rateHit('registerIp', ip);
     const {salt, hash} = await makePasswordHash(password);
+    if (db.users.some((u)=>u.email===email)) return sendJson(res,409,{error:'這個 Email 已經註冊過了。'});
     const user = { id:randomId(), email, name:name || email.split('@')[0], avatar:'', aiSettings:{...DEFAULT_AI_SETTINGS}, theme: DEFAULT_THEME, passwordHash:hash, salt, createdAt:new Date().toISOString() };
     db.users.push(user);
     const token = crypto.randomBytes(32).toString('base64url');
     db.sessions.push({id:randomId(), userId:user.id, tokenHash:sha256(token), expiresAt:Date.now()+SESSION_TTL_MS});
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,201,{ok:true,user:publicUser(user)},{'Set-Cookie':sessionCookie(token, undefined, req)});
   }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+    const ip = clientIp(req);
     const body = await readJson(req);
     const email = clean(body.email,200).toLowerCase();
-    const password = String(body.password || '');
+    const password = String(body.password || '').slice(0, 200);
+    rateCheck('loginIp', ip);
+    rateCheck('loginEmail', email);
+    rateHit('loginIp', ip);
     const user = db.users.find((u)=>u.email===email);
-    if (!user || !(await verifyPassword(password,user))) return sendJson(res,401,{error:'Email 或密碼不正確。'});
+    // 帳號不存在時也跑一次雜湊，讓回應時間一樣，別人就無法用速度判斷哪些 Email 註冊過。
+    const ok = user ? await verifyPassword(password,user) : (await hashPassword(password, DUMMY_SALT), false);
+    if (!ok) {
+      rateHit('loginEmail', email);
+      return sendJson(res,401,{error:'Email 或密碼不正確。'});
+    }
+    rateReset('loginEmail', email);
     const token = crypto.randomBytes(32).toString('base64url');
     db.sessions = db.sessions.filter((s)=>s.userId!==user.id || s.expiresAt>Date.now());
     db.sessions.push({id:randomId(),userId:user.id,tokenHash:sha256(token),expiresAt:Date.now()+SESSION_TTL_MS});
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true,user:publicUser(user)},{'Set-Cookie':sessionCookie(token, undefined, req)});
   }
 
   if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
     if (auth) {
       db.sessions = db.sessions.filter((s)=>s.id!==auth.session.id);
-      await saveDb(db);
+      await saveDb();
     }
     return sendJson(res,200,{ok:true},{'Set-Cookie':sessionCookie('', 0, req)});
   }
@@ -536,7 +607,7 @@ async function handleApi(req, res, db, auth) {
     if (!name) return sendJson(res, 400, { error: '顯示名稱不能是空白。' });
     auth.user.name = name;
     if (body.avatar !== undefined) auth.user.avatar = sanitizeAvatar(body.avatar);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res, 200, { ok: true, user: publicUser(auth.user) });
   }
 
@@ -546,7 +617,13 @@ async function handleApi(req, res, db, auth) {
     const newPassword = String(body.newPassword || '');
     if (!currentPassword) return sendJson(res, 400, { error: '請輸入目前密碼。' });
     if (newPassword.length < 8) return sendJson(res, 400, { error: '新密碼至少需要 8 個字元。' });
-    if (!(await verifyPassword(currentPassword, auth.user))) return sendJson(res, 401, { error: '目前密碼不正確。' });
+    if (newPassword.length > 200) return sendJson(res, 400, { error: '新密碼太長了（最多 200 個字元）。' });
+    rateCheck('passwordUser', auth.user.id);
+    if (!(await verifyPassword(currentPassword.slice(0, 200), auth.user))) {
+      rateHit('passwordUser', auth.user.id);
+      return sendJson(res, 401, { error: '目前密碼不正確。' });
+    }
+    rateReset('passwordUser', auth.user.id);
     const { salt, hash } = await makePasswordHash(newPassword);
     auth.user.salt = salt;
     auth.user.passwordHash = hash;
@@ -554,14 +631,14 @@ async function handleApi(req, res, db, auth) {
     db.sessions = db.sessions.filter((s) => s.userId !== auth.user.id);
     const token = crypto.randomBytes(32).toString('base64url');
     db.sessions.push({ id: randomId(), userId: auth.user.id, tokenHash: sha256(token), expiresAt: Date.now() + SESSION_TTL_MS });
-    await saveDb(db);
+    await saveDb();
     return sendJson(res, 200, { ok: true, message: '密碼已更新，其他裝置的登入狀態已失效。' }, { 'Set-Cookie': sessionCookie(token, undefined, req) });
   }
 
   if (req.method === 'PUT' && url.pathname === '/api/settings/ai') {
     const body = await readJson(req);
     auth.user.aiSettings = normalizeAiSettings(body);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res, 200, { ok: true, aiSettings: auth.user.aiSettings });
   }
 
@@ -569,6 +646,8 @@ async function handleApi(req, res, db, auth) {
   if (req.method === 'POST' && url.pathname === '/api/settings/test-key') {
     const key = readUserApiKey(req);
     if (!key) return sendJson(res, 400, { error: '請先貼上 Gemini API Key。', code: 'NO_API_KEY' });
+    rateCheck('testKeyUser', auth.user.id);
+    rateHit('testKeyUser', auth.user.id);
     try {
       const info = await new GoogleGenAI({ apiKey: key }).models.get({ model: MODEL });
       return sendJson(res, 200, { ok: true, model: info?.name || MODEL });
@@ -582,7 +661,7 @@ async function handleApi(req, res, db, auth) {
   if (req.method === 'PUT' && url.pathname === '/api/settings/theme') {
     const body = await readJson(req);
     auth.user.theme = normalizeTheme(body.theme);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res, 200, { ok: true, theme: auth.user.theme });
   }
 
@@ -602,7 +681,7 @@ async function handleApi(req, res, db, auth) {
       html:safeNoteHtml(body.html || '<p></p>'), createdAt:now, updatedAt:now
     };
     db.notes.push(note);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,201,{ok:true,note});
   }
 
@@ -616,7 +695,7 @@ async function handleApi(req, res, db, auth) {
     if (body.topic !== undefined) note.topic = clean(body.topic,300);
     if (body.question !== undefined) note.question = clean(body.question,3000);
     note.updatedAt = new Date().toISOString();
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true,note});
   }
 
@@ -625,13 +704,13 @@ async function handleApi(req, res, db, auth) {
     const before = db.notes.length;
     db.notes = db.notes.filter((n)=>!(n.id===id && n.userId===auth.user.id));
     if (db.notes.length===before) return sendJson(res,404,{error:'找不到這份筆記。'});
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true});
   }
 
   if (req.method === 'DELETE' && url.pathname === '/api/notes') {
     db.notes = db.notes.filter((n)=>n.userId!==auth.user.id);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true});
   }
 
@@ -650,7 +729,7 @@ async function handleApi(req, res, db, auth) {
       });
       added++;
     }
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true,added});
   }
 
@@ -660,7 +739,7 @@ async function handleApi(req, res, db, auth) {
     const question = clean(body.question,3000);
     const image = parseImageDataUrl(body.image);
     if (!image) return sendJson(res,400,{error:'請提供要分析的圖片。'});
-    const { client, source } = getAiClient(req);
+    const { client, source } = getAiClient(req, auth);
     try {
       const prompt = buildCameraPrompt({topic, question, grade:clean(body.grade||'國中一年級',50), subject:clean(body.subject||'其他',50), aiSettings:auth.user.aiSettings});
       const response = await client.models.generateContent({
@@ -679,7 +758,7 @@ async function handleApi(req, res, db, auth) {
     const body = await readJson(req);
     const topic = clean(body.topic,300);
     if (!topic) return sendJson(res,400,{error:'請先輸入學習主題。'});
-    const raw = await askGemini(req, buildAskPrompt({
+    const raw = await askGemini(req, auth, buildAskPrompt({
       topic, question:clean(body.question||body.message,3000),
       grade:clean(body.grade||'國中一年級',50), subject:clean(body.subject||'國文',50), aiSettings:auth.user.aiSettings
     }));
@@ -694,7 +773,7 @@ async function handleApi(req, res, db, auth) {
     const count = Math.min(Math.max(Number(body.count)||5,3),10);
     const difficulty = clean(body.difficulty||'普通',20);
     const subject = clean(body.subject||'綜合',50);
-    const raw = await askGemini(req, buildQuizPrompt({notes:plainNotes(ownedNotes),count,difficulty,subject,aiSettings:auth.user.aiSettings}),QUIZ_RESPONSE_SCHEMA);
+    const raw = await askGemini(req, auth, buildQuizPrompt({notes:plainNotes(ownedNotes),count,difficulty,subject,aiSettings:auth.user.aiSettings}),QUIZ_RESPONSE_SCHEMA);
     const quiz = parseQuiz(raw);
     const quizSet = {
       id:randomId(),userId:auth.user.id,title:clean(body.title||`AI 練習｜${new Date().toLocaleDateString('zh-TW')}`,200),
@@ -702,7 +781,7 @@ async function handleApi(req, res, db, auth) {
       lastScore:null,lastAnsweredAt:null
     };
     db.questions.push(quizSet);
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true,quiz,questionSet:quizSet});
   }
 
@@ -715,7 +794,7 @@ async function handleApi(req, res, db, auth) {
     const minutes = Math.min(Math.max(Number(body.minutes)||5,1),30);
     const difficulty = clean(body.difficulty||'普通',20);
     const subject = clean(body.subject||'綜合',50);
-    const raw = await askGemini(req, buildQuickQuizPrompt({notes:plainNotes(ownedNotes),count,minutes,difficulty,subject,aiSettings:auth.user.aiSettings}),QUICK_QUIZ_RESPONSE_SCHEMA);
+    const raw = await askGemini(req, auth, buildQuickQuizPrompt({notes:plainNotes(ownedNotes),count,minutes,difficulty,subject,aiSettings:auth.user.aiSettings}),QUICK_QUIZ_RESPONSE_SCHEMA);
     const quiz = parseQuiz(raw);
     const requestedSeconds = minutes * 60;
     const timeLimitSeconds = Math.min(Math.max(Number(JSON.parse(raw).timeLimitSeconds)||requestedSeconds,60),requestedSeconds);
@@ -727,7 +806,7 @@ async function handleApi(req, res, db, auth) {
     const questions = Array.isArray(body.questions) ? body.questions.slice(0,10) : [];
     const answers = Array.isArray(body.answers) ? body.answers.slice(0,10).map((answer)=>Number.isInteger(answer) && answer >= 0 && answer <= 3 ? answer : -1) : [];
     if (!questions.length) return sendJson(res,400,{error:'沒有可批改的題目。'});
-    const raw = await askGemini(req, buildQuickGradePrompt({questions,answers,subject:clean(body.subject||'綜合',50)}),QUICK_GRADE_RESPONSE_SCHEMA);
+    const raw = await askGemini(req, auth, buildQuickGradePrompt({questions,answers,subject:clean(body.subject||'綜合',50)}),QUICK_GRADE_RESPONSE_SCHEMA);
     const grade = JSON.parse(raw);
     const score = Math.min(Math.max(Number(grade.score)||0,0),questions.length);
     return sendJson(res,200,{ok:true,score,feedback:clean(grade.feedback,1200)});
@@ -738,7 +817,7 @@ async function handleApi(req, res, db, auth) {
     const before=db.questions.length;
     db.questions=db.questions.filter((q)=>!(q.id===id && q.userId===auth.user.id));
     if (db.questions.length===before) return sendJson(res,404,{error:'找不到這份題目。'});
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true});
   }
 
@@ -749,7 +828,7 @@ async function handleApi(req, res, db, auth) {
     const body=await readJson(req);
     const score=Math.max(0,Math.min(Number(body.score)||0,qs.questions.length));
     qs.lastScore=score; qs.lastAnsweredAt=new Date().toISOString();
-    await saveDb(db);
+    await saveDb();
     return sendJson(res,200,{ok:true,score});
   }
 
@@ -768,29 +847,57 @@ async function serveStatic(req,res) {
   if (!full.startsWith(ROOT + path.sep)) return sendJson(res,403,{error:'禁止存取。'});
   try {
     const data=await fsp.readFile(full);
-    res.writeHead(200,{'Content-Type':MIME[path.extname(full).toLowerCase()]||'application/octet-stream','Cache-Control':'no-cache'});
-    res.end(data);
+    // HEAD（UptimeRobot 等監控常用）只回標頭，Node 會自動不送內容。
+    res.writeHead(200,{'Content-Type':MIME[path.extname(full).toLowerCase()]||'application/octet-stream','Cache-Control':'no-cache','Content-Length':data.length});
+    res.end(req.method==='HEAD' ? undefined : data);
   } catch { sendJson(res,404,{error:'找不到頁面。'}); }
 }
 
+// 安全標頭：限制網頁只能執行自己網站的程式、禁止被其他網站用 iframe 嵌入等。
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "media-src 'self' blob:",
+  "worker-src 'self' blob:",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+function setSecurityHeaders(req, res) {
+  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(self), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  if (isHttps(req)) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
+}
+
 (async()=>{
-  await ensureDb();
+  await initDb();
   const server=http.createServer(async(req,res)=>{
     try {
-      const db=await loadDb();
-      const auth=await getAuth(req,db);
+      setSecurityHeaders(req,res);
       if (req.method==='OPTIONS') return sendJson(res,204,{});
       const url=new URL(req.url,`http://${req.headers.host||'localhost'}`);
+      if (req.method==='HEAD' && url.pathname==='/api/health') { res.writeHead(200); return res.end(); }
+      const auth=await getAuth(req,DB);
       // 一定要 await，否則 handleApi 裡丟出的錯誤不會被下面的 catch 接到，請求會卡住。
-      if (url.pathname.startsWith('/api/')) return await handleApi(req,res,db,auth);
-      if (req.method==='GET') return await serveStatic(req,res);
+      if (url.pathname.startsWith('/api/')) return await handleApi(req,res,DB,auth);
+      if (req.method==='GET' || req.method==='HEAD') return await serveStatic(req,res);
       return sendJson(res,405,{error:'Method Not Allowed'});
     } catch(error) {
       console.error('[ELOLearning]', error?.code || '', error?.message || error);
       if (res.headersSent) return res.end();
       const payload = { error: error.message || '伺服器發生錯誤。' };
       if (error.code) payload.code = error.code;
-      sendJson(res,Math.min(Math.max(Number(error.status)||500,400),599),payload);
+      const headers = error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {};
+      sendJson(res,Math.min(Math.max(Number(error.status)||500,400),599),payload,headers);
     }
   });
   server.listen(PORT,HOST,()=> {
@@ -800,4 +907,12 @@ async function serveStatic(req,res) {
   });
 })();
 
-process.on('SIGINT',()=>process.exit(0));
+// Render 重新部署時會送 SIGTERM：先把還沒寫完的資料寫進檔案再結束。
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return; shuttingDown = true;
+  try { await writeQueue; } catch {}
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

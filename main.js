@@ -36,7 +36,7 @@ const els = {
   currentPasswordInput: $('#currentPasswordInput'), newPasswordInput: $('#newPasswordInput'), confirmPasswordInput: $('#confirmPasswordInput'), changePasswordBtn: $('#changePasswordBtn'),
   aiStyleSelect: $('#aiStyleSelect'), aiDetailSelect: $('#aiDetailSelect'), aiLanguageSelect: $('#aiLanguageSelect'), aiStepsToggle: $('#aiStepsToggle'), aiSettingsStatus: $('#aiSettingsStatus'), saveAiSettingsBtn: $('#saveAiSettingsBtn'),
   themeDarkBtn: $('#themeDarkBtn'), themeLightBtn: $('#themeLightBtn'),
-  apiKeyCard: $('#apiKeyCard'), apiKeyInput: $('#apiKeyInput'), apiKeyStatus: $('#apiKeyStatus'), apiKeySaveBtn: $('#apiKeySaveBtn'), apiKeyRemoveBtn: $('#apiKeyRemoveBtn'), apiKeyRevealBtn: $('#apiKeyRevealBtn'), apiKeyMessage: $('#apiKeyMessage'), apiKeyNotice: $('#apiKeyNotice'),
+  apiKeyCard: $('#apiKeyCard'), apiKeyInput: $('#apiKeyInput'), apiKeyStatus: $('#apiKeyStatus'), apiKeySaveBtn: $('#apiKeySaveBtn'), apiKeyRemoveBtn: $('#apiKeyRemoveBtn'), apiKeyRevealBtn: $('#apiKeyRevealBtn'), apiKeyMessage: $('#apiKeyMessage'), apiKeyRemember: $('#apiKeyRemember'), apiKeyNotice: $('#apiKeyNotice'),
   cameraBtn: $('#cameraBtn'), cameraModal: $('#cameraModal'), cameraCloseBtn: $('#cameraCloseBtn'), cameraVideo: $('#cameraVideo'), cameraCanvas: $('#cameraCanvas'), cameraPreview: $('#cameraPreview'), cameraPreviewImage: $('#cameraPreviewImage'), cameraCaptureBtn: $('#cameraCaptureBtn'), cameraAnalyzeBtn: $('#cameraAnalyzeBtn'), cameraRetakeBtn: $('#cameraRetakeBtn'), cameraFileInput: $('#cameraFileInput'), cameraStatus: $('#cameraStatus'),
 };
 
@@ -76,22 +76,35 @@ function toast(text,type='info') {
 }
 // ── Gemini API Key：每個帳號各自一把，只存在這台裝置的瀏覽器 ──
 const KEY_ERROR_CODES = new Set(['NO_API_KEY','INVALID_API_KEY','QUOTA_EXCEEDED']);
+const AI_PATHS = new Set(['/api/ask','/api/camera','/api/quiz','/api/quick-quiz','/api/quick-quiz/grade']);
+// 勾「記住在這台裝置」→ localStorage（關掉瀏覽器也還在）
+// 沒勾 → sessionStorage（關掉分頁或登出就清除，適合公用電腦）
 function apiKeyStorageName() { return state.user ? `elolearning.geminiKey.${state.user.id}` : ''; }
+function readStore(store, name) { try { return store.getItem(name) || ''; } catch { return ''; } }
 function getUserApiKey() {
   const name = apiKeyStorageName(); if (!name) return '';
-  try { return localStorage.getItem(name) || ''; } catch { return ''; }
+  return readStore(localStorage, name) || readStore(sessionStorage, name);
 }
-function setUserApiKey(value) {
+function isKeyRemembered() { const name = apiKeyStorageName(); return Boolean(name && readStore(localStorage, name)); }
+function setUserApiKey(value, remember = false) {
   const name = apiKeyStorageName(); if (!name) return false;
-  try { value ? localStorage.setItem(name, value) : localStorage.removeItem(name); return true; }
-  catch { return false; }
+  try {
+    localStorage.removeItem(name); sessionStorage.removeItem(name);
+    if (value) (remember ? localStorage : sessionStorage).setItem(name, value);
+    return true;
+  } catch { return false; }
+}
+function clearSessionKey() {
+  const name = apiKeyStorageName(); if (!name) return;
+  try { sessionStorage.removeItem(name); } catch {}
 }
 function maskKey(key='') { return key.length > 8 ? `${key.slice(0,4)}••••${key.slice(-4)}` : '••••'; }
 function hasUsableKey() { return Boolean(getUserApiKey()) || state.sharedKey; }
 
 async function api(path, options={}) {
   const { apiKey, ...rest } = options;
-  const key = apiKey !== undefined ? apiKey : getUserApiKey();
+  // 金鑰只附在真的要呼叫 AI 的請求上，其他請求（筆記、設定…）不帶
+  const key = apiKey !== undefined ? apiKey : (AI_PATHS.has(path) ? getUserApiKey() : '');
   const opts={method:'GET',credentials:'same-origin',...rest,headers:{...(rest.body?{'Content-Type':'application/json'}:{}),...(key?{'X-Gemini-Api-Key':key}:{}),...(rest.headers||{})}};
   if (opts.body && typeof opts.body !== 'string') opts.body=JSON.stringify(opts.body);
   const res=await fetch(path,opts);
@@ -301,8 +314,14 @@ async function clearNotes(){
 async function downloadExternal(src,globalName){ if(window[globalName]) return window[globalName]; return new Promise((resolve,reject)=>{const s=document.createElement('script');s.src=src;s.async=true;s.onload=()=>window[globalName]?resolve(window[globalName]):reject(new Error(`無法載入 ${globalName}`));s.onerror=()=>reject(new Error(`無法載入匯出工具`));document.head.appendChild(s);}); }
 function safeFilename(name){return String(name||'ELOLearning').replace(/[<>:"/\\|?*\x00-\x1F]/g,'-').slice(0,90);}
 function exportDoc(note){const d=document.createElement('div');d.className='export-document';d.innerHTML=`<h1>${escapeHtml(note.title)}</h1><p>${escapeHtml(note.grade)} · ${escapeHtml(note.subject)}</p>${sanitizeRichHtml(note.html)}`;return d;}
-async function downloadWord(){const n=state.notes.find(x=>x.id===state.currentNoteId);if(!n)return;try{const h=await downloadExternal('https://unpkg.com/html-docx-js@0.3.1/dist/html-docx.js','htmlDocx');const d=exportDoc(n);const html=`<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;line-height:1.7}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:7px}th{background:#eee}</style></head><body>${d.innerHTML}</body></html>`;downloadBlob(h.asBlob(html),`${safeFilename(n.title)}.docx`);toast('Word 已下載。','success');}catch(e){toast(`Word 匯出失敗：${e.message}`,'error');}}
-async function downloadPdf(){const n=state.notes.find(x=>x.id===state.currentNoteId);if(!n)return;try{const h=await downloadExternal('https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js','html2pdf');const d=exportDoc(n);Object.assign(d.style,{background:'#fff',color:'#111',width:'760px',padding:'40px',position:'fixed',left:'-10000px',top:'0'});document.body.appendChild(d);await h().set({margin:8,filename:`${safeFilename(n.title)}.pdf`,html2canvas:{scale:2,backgroundColor:'#fff'},jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy']}}).from(d).save();d.remove();toast('PDF 已下載。','success');}catch(e){toast(`PDF 匯出失敗：${e.message}`,'error');}}
+async function downloadWord(){const n=state.notes.find(x=>x.id===state.currentNoteId);if(!n)return;try{const h=await downloadExternal('assets/vendor/html-docx.js','htmlDocx');const d=exportDoc(n);const html=`<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:Arial,sans-serif;line-height:1.7}table{border-collapse:collapse;width:100%}th,td{border:1px solid #999;padding:7px}th{background:#eee}</style></head><body>${d.innerHTML}</body></html>`;downloadBlob(h.asBlob(html),`${safeFilename(n.title)}.docx`);toast('Word 已下載。','success');}catch(e){toast(`Word 匯出失敗：${e.message}`,'error');}}
+async function downloadPdf(){const n=state.notes.find(x=>x.id===state.currentNoteId);if(!n)return;try{const h=await downloadExternal('assets/vendor/html2pdf.bundle.min.js','html2pdf');const d=exportDoc(n);
+    // 以前匯出的 PDF 是一片空白，原因有兩個：
+    // 1. 元素被移到畫面外（left:-10000px），html2pdf 連位置一起複製，拍到空白處
+    // 2. 按下載鍵時頁面已經往下捲，html2canvas 會扣掉捲動距離，同樣拍到空白
+    // 所以不移位置，並把 scrollX / scrollY 固定為 0。
+    Object.assign(d.style,{background:'#fff',color:'#111',width:'760px',padding:'40px',boxSizing:'border-box'});
+    await h().set({margin:8,filename:`${safeFilename(n.title)}.pdf`,html2canvas:{scale:2,backgroundColor:'#fff',scrollX:0,scrollY:0},jsPDF:{unit:'mm',format:'a4',orientation:'portrait'},pagebreak:{mode:['css','legacy']}}).from(d).save();toast('PDF 已下載。','success');}catch(e){toast(`PDF 匯出失敗：${e.message}`,'error');}}
 function downloadBlob(blob,name){const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(u),1000);}
 
 function plainNotesForQuiz(notes){return notes.map((n,i)=>`【第${i+1}筆｜${n.title}｜${n.subject}｜${n.grade}】\n${htmlToPlainText(n.html)}`).join('\n\n');}
@@ -441,7 +460,14 @@ function updateApiKeyUi(){
   else { status.dataset.state='none'; status.textContent='尚未設定'; }
   els.apiKeyRemoveBtn.hidden=!key;
   els.apiKeyInput.placeholder=key?'要更換的話，貼上新的金鑰':'貼上以 AIza 開頭的金鑰';
+  if(key) els.apiKeyRemember.checked=isKeyRemembered();
   els.apiKeyNotice.hidden=hasUsableKey();
+}
+// 已存好金鑰時切換勾選，直接把金鑰搬到對應的儲存位置
+function changeKeyRemember(){
+  const key=getUserApiKey(); if(!key) return;
+  const remember=els.apiKeyRemember.checked;
+  if(setUserApiKey(key, remember)) setKeyMessage(remember?'這台裝置會記住你的金鑰。':'金鑰改成只在這個分頁有效，登出或關掉分頁就會清除。','info');
 }
 function toggleKeyReveal(){
   const show=els.apiKeyInput.type==='password';
@@ -456,9 +482,12 @@ async function saveApiKey(){
   els.apiKeySaveBtn.disabled=true; setKeyMessage('正在向 Gemini 確認金鑰…');
   try{
     await api('/api/settings/test-key',{method:'POST',apiKey:key});
-    if(!setUserApiKey(key)){ setKeyMessage('金鑰可以用，但瀏覽器不允許儲存（可能是無痕模式）。','error'); return; }
+    const remember=els.apiKeyRemember.checked;
+    if(!setUserApiKey(key, remember)){ setKeyMessage('金鑰可以用，但瀏覽器不允許儲存（可能是無痕模式）。','error'); return; }
     els.apiKeyInput.value=''; if(els.apiKeyInput.type==='text') toggleKeyReveal();
-    updateApiKeyUi(); setKeyMessage('✓ 金鑰可以使用，已儲存在這台裝置。','success'); toast('Gemini API Key 設定完成！','success');
+    updateApiKeyUi();
+    setKeyMessage(remember?'✓ 金鑰可以使用，這台裝置會記住它。':'✓ 金鑰可以使用。登出或關掉分頁後會自動清除。','success');
+    toast('Gemini API Key 設定完成！','success');
   }catch(error){ setKeyMessage(error.message,'error'); }
   finally{ els.apiKeySaveBtn.disabled=false; }
 }
@@ -612,7 +641,7 @@ async function analyzeCamera(){
   finally{ setBusy(false); }
 }
 
-async function logout(){try{await api('/api/auth/logout',{method:'POST'});}catch{} location.reload();}
+async function logout(){clearSessionKey();try{await api('/api/auth/logout',{method:'POST',apiKey:''});}catch{} location.reload();}
 
 async function bootstrap(){
   setAuthMode('login');
@@ -733,6 +762,7 @@ function bindEvents() {
   els.themeLightBtn?.addEventListener('click',()=>setTheme('light'));
   els.cameraFileInput.addEventListener('change', handleCameraFile);
   els.cameraModal.addEventListener('click', (event)=>{ if(event.target === els.cameraModal) closeCamera(); });
+  els.apiKeyRemember.addEventListener('change', changeKeyRemember);
   els.apiKeyInput.addEventListener('keydown', (event)=>{ if(event.key==='Enter'){ event.preventDefault(); saveApiKey(); } });
 
   // 鍵盤快捷鍵
