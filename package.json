@@ -1,0 +1,16 @@
+{
+  "name": "elo-elolearning",
+  "version": "2.0.0",
+  "private": true,
+  "description": "ELOLearning — 帳號登入、雲端筆記、AI 出題與個人題目保存",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@google/genai": "latest"
+  }
+}

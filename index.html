@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ELOLearning｜AI 學習助手</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="authGate" class="auth-gate">
+  <div class="auth-card panel">
+    <div class="auth-brand">
+  <div class="css-logo css-logo-sm" aria-hidden="true"><span class="css-logo-e"><img class="site-logo" src="assets/logo.png" alt="ELOLearning"></span></div>
+  <div><strong>ELOLearning</strong><small>AI 學習助手</small></div>
+</div>
+    <div class="auth-tabs"><button id="loginTab" class="auth-tab active">登入</button><button id="registerTab" class="auth-tab">註冊</button></div>
+    <form id="authForm">
+      <label id="nameWrap" class="auth-field" hidden>名稱<input id="nameInput" autocomplete="name" maxlength="60" placeholder="你的名稱"></label>
+      <label class="auth-field">Email<input id="emailInput" type="email" autocomplete="email" required placeholder="you@example.com"></label>
+      <label class="auth-field">密碼<input id="passwordInput" type="password" autocomplete="current-password" minlength="8" required placeholder="至少 8 個字元"></label>
+      <button id="authBtn" class="primary-btn auth-submit">登入 ELOLearning</button>
+      <p id="authMessage" class="auth-message"></p>
+    </form>
+    
+  </div>
+</div>
+
+<div id="appShell" hidden>
+<header class="topbar">
+  <a class="brand" href="#" aria-label="ELOLearning"><span class="brand-mark"><img class="site-logo" src="assets/logo.png" alt="ELOLearning"></span><span><strong>ELOLearning</strong><small>AI Study Space</small></span></a>
+  <div class="account">
+    <button id="accountBtn" class="account-profile" type="button" aria-label="開啟設定"><span id="accountAvatar" class="avatar avatar-sm">E</span><span id="userName"></span></button>
+    <button id="logoutBtn" class="ghost-btn">登出</button>
+  </div>
+</header>
+<main class="app">
+<aside class="sidebar">
+  <div class="nav-title">導覽</div>
+  <button id="navAsk" class="nav-btn active"><span class="nav-icon">✦</span><span class="nav-copy"><strong>問 AI</strong></span></button>
+  <button id="navNotes" class="nav-btn"><span class="nav-icon">▣</span><span class="nav-copy"><strong>我的重點</strong><span class="nav-count" id="notesCount">0 筆</span></span></button>
+  <button id="navQuestions" class="nav-btn"><span class="nav-icon">☷</span><span class="nav-copy"><strong>我的題目</strong><span class="nav-count" id="questionsCount">0 份</span></span></button>
+  <button id="navQuiz" class="nav-btn"><span class="nav-icon">?</span><span class="nav-copy"><strong>開始出題</strong></span></button>
+  <button id="navSettings" class="nav-btn"><span class="nav-icon">⚙</span><span class="nav-copy"><strong>設定</strong></span></button>
+</aside>
+
+<section class="content">
+<section id="askPanel">
+<div class="hero">
+  <div class="hero-copy">
+    <h1 id="welcomeTitle">歡迎回來！</h1>
+    
+    <div class="hero-features"><span>✦ AI 解答</span><span>▤ 自動整理</span><span>⌁ 雲端保存</span></div>
+  </div>
+  <div class="hero-visual" aria-hidden="true">
+    <div class="hero-glow"></div>
+    <div class="orbit orbit-a"></div>
+    <div class="orbit orbit-b"></div>
+    <div class="hero-logo css-logo css-logo-lg"><span class="css-logo-e"><img class="site-logo" src="assets/logo.png" alt="ELOLearning"></span></div>
+    <div class="float-chip chip-one">AI</div>
+    <div class="float-chip chip-two">✦</div>
+    <div class="float-chip chip-three">學習</div>
+  </div>
+</div>
+<div id="apiKeyNotice" class="api-key-notice" hidden>
+  <div><strong>還差一步：設定你的 Gemini API Key</strong><span>AI 解答、出題和智慧鏡頭都需要它，免費就能申請。</span></div>
+  <button id="goSettingsBtn" class="primary-btn" type="button">前往設定</button>
+</div>
+<div class="panel ask-panel">
+<div class="panel-head"><div><h2>你想學什麼？</h2></div></div>
+<div class="selectors">
+<label>年級<select id="gradeSelect"><option>國中一年級</option><option>國中二年級</option><option>國中三年級</option><option>高中</option></select></label>
+<label>科目<select id="subjectSelect"><option>國文</option><option>數學</option><option>英文</option><option>自然</option><option>社會</option><option>其他</option></select></label>
+</div>
+<label class="field-label">學習主題</label><input id="topicInput" class="topic-input" maxlength="300" placeholder="例如：岳陽樓記、一次函數、細胞構造">
+<label class="field-label">你想問 AI 什麼？ </label>
+<textarea id="questionInput" maxlength="3000" rows="6" placeholder="例如：教我一次函數，並整理成表格，重要觀念用粗體。"></textarea>
+<div class="format-hints"><button type="button" data-prompt="請整理成表格">表格</button><button type="button" data-prompt="重要名詞請使用粗體，補充內容使用斜體">粗體＋斜體</button><button type="button" data-prompt="請用條列式整理">條列</button><button type="button" data-prompt="請分成「定義／例子／容易搞混」">分段</button></div>
+<div class="ask-footer"><span class="hint">Ctrl / Cmd + Enter 送出</span><div class="ask-actions"><button id="cameraBtn" class="ghost-btn camera-btn" type="button">⌾ 智慧鏡頭</button><button id="askBtn" class="primary-btn">詢問 AI ↗</button></div></div>
+</div>
+<div id="loading" class="loading" hidden>
+  <div class="loading-orb" aria-hidden="true"><i></i><i></i><i></i></div>
+  <div><strong>AI 正在處理…</strong><span id="loadingSub">完成後自動保存。</span></div>
+</div>
+<section id="resultBox" class="panel result-panel" hidden><div class="panel-head"><div><h2>這次學到的內容</h2></div><div class="result-actions"><span class="saved-tag">✓ 已同步</span><button id="editCurrentBtn" class="ghost-btn">在我的重點編輯</button></div></div><article id="result" class="rich-content"></article></section>
+</section>
+
+<section id="notesPanel" class="panel page-panel" hidden>
+<div class="panel-head"><div><h2>我的重點</h2></div><div class="notes-toolbar-actions"><button id="newNoteBtn" class="ghost-btn">＋ 新筆記</button><button id="clearAll" class="danger-btn">清空全部</button></div></div>
+<div class="notes-layout"><div class="notes-list"><div id="emptyNotes" class="empty">
+  <div class="empty-illustration" aria-hidden="true"><div class="empty-book"></div><div class="empty-spark spark-a">✦</div><div class="empty-spark spark-b">•</div></div>
+  <h3>還沒有重點</h3>
+</div><div id="history"></div></div>
+<div id="noteEditorArea" class="note-editor-area" hidden><div class="editor-header"><div><input id="noteTitleInput" class="note-title-input" placeholder="筆記標題"><div id="noteMeta" class="note-meta"></div></div><span id="saveIndicator" class="save-indicator">已同步</span></div>
+<div class="editor-toolbar"><button type="button" data-cmd="bold" title="粗體"><strong>B</strong></button><button type="button" data-cmd="italic" title="斜體"><em>I</em></button><button type="button" data-cmd="underline" title="底線"><u>U</u></button><button type="button" data-cmd="strikeThrough" title="刪除線"><s>S</s></button><span class="toolbar-sep"></span><select id="formatBlock"><option value="p">本文</option><option value="h2">大標題</option><option value="h3">小標題</option><option value="blockquote">引用</option><option value="pre">程式碼</option></select><button type="button" data-cmd="insertUnorderedList">• 清單</button><button type="button" data-cmd="insertOrderedList">1. 清單</button><span class="toolbar-sep"></span><button type="button" id="insertTableBtn">▦ 表格</button><button type="button" data-cmd="undo">↶</button><button type="button" data-cmd="redo">↷</button></div>
+<article id="noteEditor" class="rich-editor" contenteditable="true" spellcheck="true"></article>
+<div class="editor-bottom"><div><button id="downloadWordBtn" class="ghost-btn">下載 Word</button><button id="downloadPdfBtn" class="ghost-btn">下載 PDF</button><button id="deleteNoteBtn" class="danger-btn">刪除筆記</button></div></div></div></div>
+</section>
+
+<section id="quizPanel" class="panel page-panel" hidden><div class="panel-head"><div><h2>根據我的重點出題</h2></div></div>
+<div class="quiz-settings quiz-settings-modern"><label>題數<select id="quizCount"><option value="5">5 題</option><option value="8">8 題</option><option value="10">10 題</option></select></label><label>難度<select id="difficultySelect"><option>簡單</option><option selected>普通</option><option>困難</option></select></label><label class="quiz-scope-label">使用哪一些筆記<select id="quizScope"><option value="all">全部我的重點</option></select></label><button id="quizBtn" class="primary-btn">讓 AI 出題 →</button></div><div id="quizBox" hidden></div>
+
+<section class="quick-quiz-section" aria-labelledby="quickQuizTitle"><div class="quick-quiz-heading"><div><h2 id="quickQuizTitle">快問快答</h2></div></div><div class="quick-quiz-settings"><label>練習時間<select id="quickQuizMinutes"><option value="3">3 分鐘</option><option value="5" selected>5 分鐘</option><option value="10">10 分鐘</option><option value="15">15 分鐘</option></select></label><label>題數<select id="quickQuizCount"><option value="3">3 題</option><option value="5" selected>5 題</option><option value="8">8 題</option><option value="10">10 題</option></select></label><label>難度<select id="quickQuizDifficulty"><option>簡單</option><option selected>普通</option><option>困難</option></select></label><label class="quick-quiz-scope">使用哪一些筆記<select id="quickQuizScope"><option value="all">全部我的重點</option></select></label><button id="quickQuizBtn" class="primary-btn" type="button">開始限時挑戰</button></div><div id="quickQuizBox" hidden></div></section></section>
+
+<section id="questionsPanel" class="panel page-panel" hidden><div class="panel-head"><div><h2>我的題目</h2></div></div><div id="questionsList"></div></section>
+<section id="settingsPanel" class="settings-page" hidden>
+<div class="settings-hero">
+  <div><h2>設定</h2></div>
+</div>
+<div class="settings-grid">
+  <section class="panel settings-card profile-card">
+    <div class="settings-card-head"><div><h3>個人資料</h3></div></div>
+    <div class="profile-layout">
+      <div class="avatar-stage"><button id="avatarButton" class="profile-avatar avatar avatar-xl" type="button" title="更換頭像">E</button><input id="avatarInput" type="file" accept="image/png,image/jpeg,image/webp" hidden></div>
+      <div class="profile-form">
+        <label class="settings-field">顯示名稱<input id="profileNameInput" maxlength="60" placeholder="你的名稱"></label>
+        <label class="settings-field">Email<input id="profileEmailInput" disabled></label>
+        <button id="saveProfileBtn" class="primary-btn" type="button">儲存個人資料</button>
+      </div>
+    </div>
+  </section>
+  <section class="panel settings-card password-card">
+    <div class="settings-card-head"><div><h3>密碼</h3></div></div>
+    <div class="password-form">
+      <label class="settings-field">目前密碼<input id="currentPasswordInput" type="password" autocomplete="current-password" minlength="8"></label>
+      <label class="settings-field">新密碼<input id="newPasswordInput" type="password" autocomplete="new-password" minlength="8"></label>
+      <label class="settings-field">確認新密碼<input id="confirmPasswordInput" type="password" autocomplete="new-password" minlength="8"></label>
+      <button id="changePasswordBtn" class="ghost-btn" type="button">更新密碼</button>
+    </div>
+  </section>
+  <section class="panel settings-card theme-settings-card">
+    <div class="settings-card-head"><div><h3>畫面主題</h3></div></div>
+    <div class="theme-options" role="group" aria-label="畫面主題">
+      <button id="themeDarkBtn" class="theme-option" type="button" data-theme-choice="dark"><span class="theme-preview theme-preview-dark"></span><span><strong>深色</strong><small>深紫藍</small></span></button>
+      <button id="themeLightBtn" class="theme-option" type="button" data-theme-choice="light"><span class="theme-preview theme-preview-light"></span><span><strong>黑白</strong><small>白底黑字</small></span></button>
+    </div>
+  </section>
+  <section class="panel settings-card api-key-card" id="apiKeyCard">
+    <div class="settings-card-head api-key-head">
+      <div><h3>Gemini API Key</h3><p>ELOLearning 的 AI 功能需要一把 Gemini 金鑰。金鑰只會存在<strong>這台裝置的瀏覽器</strong>裡，不會保存在伺服器。</p></div>
+      <span id="apiKeyStatus" class="key-status" data-state="none">尚未設定</span>
+    </div>
+    <div class="api-key-form">
+      <label class="settings-field" for="apiKeyInput">你的金鑰
+        <span class="key-input-row">
+          <input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="貼上以 AIza 開頭的金鑰">
+          <button id="apiKeyRevealBtn" class="ghost-btn key-reveal" type="button" aria-label="顯示金鑰">顯示</button>
+        </span>
+      </label>
+      <div class="key-actions">
+        <button id="apiKeyRemoveBtn" class="danger-btn" type="button" hidden>移除金鑰</button>
+        <button id="apiKeySaveBtn" class="primary-btn" type="button">測試並儲存</button>
+      </div>
+      <p id="apiKeyMessage" class="key-message" role="status"></p>
+    </div>
+    <details class="key-help">
+      <summary>怎麼拿到 Gemini API Key？</summary>
+      <ol>
+        <li>打開 <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">Google AI Studio 的 API Key 頁面</a>，用 Google 帳號登入。</li>
+        <li>按「Create API key」，複製產生的那串金鑰。</li>
+        <li>回到這裡貼上，按「測試並儲存」。</li>
+      </ol>
+      <p>在公用電腦用完記得按「移除金鑰」。金鑰就像密碼，不要分享給別人。</p>
+    </details>
+  </section>
+  <section class="panel settings-card ai-settings-card">
+    <div class="settings-card-head"><div><h3>AI 老師設定</h3></div></div>
+    <div class="ai-settings-grid">
+      <label class="settings-field">教學風格<select id="aiStyleSelect"><option value="親切引導">親切引導</option><option value="條理清晰">條理清晰</option><option value="活潑有趣">活潑有趣</option><option value="考試導向">考試導向</option></select></label>
+      <label class="settings-field">回答詳細程度<select id="aiDetailSelect"><option value="精簡">精簡</option><option value="適中">適中</option><option value="詳細">詳細</option></select></label>
+      <label class="settings-field">預設回覆語言<select id="aiLanguageSelect"><option value="繁體中文">繁體中文</option><option value="簡潔中文">簡潔中文</option></select></label>
+      <label class="settings-toggle"><input id="aiStepsToggle" type="checkbox"><span><strong>需要時提供解題步驟</strong></span></label>
+    </div>
+    <div class="settings-save-row"><span id="aiSettingsStatus" class="save-indicator">已同步</span><button id="saveAiSettingsBtn" class="primary-btn" type="button">儲存 AI 老師設定</button></div>
+  </section>
+</div>
+</section>
+</section></main>
+</div>
+
+<div id="cameraModal" class="camera-modal" hidden>
+  <div class="camera-backdrop" data-camera-close></div>
+  <section class="camera-card panel" role="dialog" aria-modal="true" aria-labelledby="cameraTitle">
+    <div class="camera-head">
+      <div><h2 id="cameraTitle">拍下你正在看的內容</h2></div>
+      <button id="cameraCloseBtn" class="icon-btn" type="button" aria-label="關閉">×</button>
+    </div>
+    <div class="camera-stage">
+      <video id="cameraVideo" autoplay playsinline muted></video>
+      <canvas id="cameraCanvas" hidden></canvas>
+      <div id="cameraPreview" class="camera-preview" hidden><img id="cameraPreviewImage" alt="拍攝預覽"></div>
+      <div class="camera-guide" aria-hidden="true"></div>
+      <div id="cameraStatus" class="camera-status">準備開啟鏡頭…</div>
+    </div>
+    <div class="camera-actions">
+      <button id="cameraRetakeBtn" class="ghost-btn" type="button" hidden>重新拍攝</button>
+      <label class="camera-upload ghost-btn"><input id="cameraFileInput" type="file" accept="image/*" capture="environment" hidden>從圖片分析</label>
+      <button id="cameraCaptureBtn" class="primary-btn" type="button">拍下來</button>
+      <button id="cameraAnalyzeBtn" class="primary-btn" type="button" hidden>交給 AI 分析</button>
+    </div>
+  </section>
+</div>
+<div id="toast" class="toast"></div>
+<script src="main.js"></script>
+</body></html>
